@@ -1,0 +1,175 @@
+-- Robust maze explorer for ComputerCraft turtles
+-- - Tracks visited cells (x,y) and orientation
+-- - DFS exploration with backtracking (avoids infinite loops)
+-- - Uses inspectDown() to detect start (green) and goal (yellow)
+-- - Respects detect() (doesn't dig) and checks turtle.forward() results
+-- - Auto-refuels from inventory if needed
+
+
+local start = "green"  -- substring to find in inspectDown().name for start
+local goal  = "yellow" -- substring for victory
+
+
+
+local x, y = 0, 0          
+local facing = 0            
+local visited = {}          
+local path = {}            
+
+local function key(px, py)
+     return tostring(px) .. "," .. tostring(py) 
+end
+
+
+local function turnRight()
+    turtle.turnRight()
+    facing = (facing + 1) % 4
+end
+
+local function turnLeft()
+    turtle.turnLeft()
+    facing = (facing + 3) % 4
+end
+
+local function turnTo(target)
+    target = (target % 4 + 4) % 4
+    local diff = (target - facing) % 4
+    if diff == 1 then turnRight()
+    elseif diff == 2 then turnRight() turnRight()
+    elseif diff == 3 then turnLeft()
+    end
+end
+
+local function forwardAndUpdate()
+    if turtle.forward() then
+        if facing == 0 then y = y + 1
+        elseif facing == 1 then x = x + 1
+        elseif facing == 2 then y = y - 1
+        elseif facing == 3 then x = x - 1
+        end
+        return true
+    end
+    return false
+end
+
+local function inspectDownMatches(substr)
+    local ok, data = turtle.inspectDown()
+    return ok and data.name:find(substr)
+end
+
+local function victory()
+    print("Victory!")
+    for i = 1, 4 do turtle.turnRight() end
+    if not turtle.detectUp() then
+        turtle.up()
+    end
+end
+
+local function markVisited()
+    visited[key(x,y)] = true
+end
+
+local function isVisited(px, py)
+    return visited[key(px,py)] == true
+end
+
+
+local function neighborFor(dir)
+    if dir == 0 then return x, y+1 
+    end
+    if dir == 1 then return x+1, y
+     end
+    if dir == 2 then return x, y-1
+     end
+    if dir == 3 then return x-1, y
+     end
+end
+
+local function canMoveAbsolute(dir)
+    local oldFacing = facing
+    turnTo(dir)
+    local blocked = turtle.detect()
+    turnTo(oldFacing)
+    return not blocked
+end
+
+local function moveAbsolute(dir)
+    turnTo(dir)
+    if not turtle.detect() then
+        local prevX, prevY = x, y
+        if forwardAndUpdate() then
+            table.insert(path, {prevX, prevY})
+            return true
+        end
+    end
+    return false
+end
+
+local function backtrackStep()
+    if #path == 0 then
+        return false
+    end
+    local prev = table.remove(path)
+    local px, py = prev[1], prev[2]
+    local dx, dy = px - x, py - y
+    local needed
+    if dx == 1 and dy == 0 then needed = 1
+    elseif dx == -1 and dy == 0 then needed = 3
+    elseif dx == 0 and dy == 1 then needed = 0
+    elseif dx == 0 and dy == -1 then needed = 2
+    else
+        print("Backtrack error: prev not adjacent", x, y, px, py)
+        return false
+    end
+    turnTo(needed)
+    if forwardAndUpdate() then
+        return true
+    else
+        print("Failed to backtrack into a previously visited cell. Aborting.")
+        return false
+    end
+end
+
+
+markVisited()
+
+if inspectDownMatches(start) then
+    print("At start tile.")
+end
+
+while true do
+    if inspectDownMatches(goal) then
+        victory()
+        break
+    end
+
+
+    local moved = false
+    local tryOrder = { (facing + 1) % 4, facing, (facing + 3) % 4, (facing + 2) % 4 }
+
+    for _, absDir in ipairs(tryOrder) do
+        local nx, ny = neighborFor(absDir)
+        if not isVisited(nx, ny) then
+            if canMoveAbsolute(absDir) then
+                if moveAbsolute(absDir) then
+                    markVisited()
+                    moved = true
+                    break
+                end
+            else
+
+                visited[tostring(nx) .. "," .. tostring(ny)] = true
+            end
+        end
+    end
+
+    if not moved then
+        if not backtrackStep() then
+            print("no path found")
+            break
+        else
+        end
+    end
+end
+
+print("Done. Final coords:", x, y, "facing", facing)

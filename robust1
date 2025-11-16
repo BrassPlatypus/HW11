@@ -1,0 +1,306 @@
+-- Robust maze explorer for ComputerCraft turtles with vertical movement
+-- - Tracks visited cells (x,y,z) and orientation
+-- - DFS exploration with backtracking (avoids infinite loops)
+-- - Uses inspectDown() to detect start (green), goal (yellow), and special blocks
+-- - Goes down if there's a hole (air below), up if red block underneath
+-- - Respects detect() (doesn't dig) and checks turtle.forward() results
+-- - Auto-refuels from inventory if needed
+
+local start = "green"  -- substring to find in inspectDown().name for start
+local goal  = "yellow" -- substring for victory
+local redBlock = "red" -- substring for red blocks
+
+local x, y, z = 0, 0, 0  -- x, y for horizontal, z for vertical position
+local facing = 0         -- 0: north, 1: east, 2: south, 3: west
+local visited = {}       -- visited positions
+local path = {}          -- path for backtracking
+
+local function key(px, py, pz)
+    return tostring(px) .. "," .. tostring(py) .. "," .. tostring(pz)
+end
+
+local function turnRight()
+    turtle.turnRight()
+    facing = (facing + 1) % 4
+end
+
+local function turnLeft()
+    turtle.turnLeft()
+    facing = (facing + 3) % 4
+end
+
+local function turnTo(target)
+    target = (target % 4 + 4) % 4
+    local diff = (target - facing) % 4
+    if diff == 1 then turnRight()
+    elseif diff == 2 then turnRight() turnRight()
+    elseif diff == 3 then turnLeft()
+    end
+end
+
+local function forwardAndUpdate()
+    if turtle.forward() then
+        if facing == 0 then y = y + 1
+        elseif facing == 1 then x = x + 1
+        elseif facing == 2 then y = y - 1
+        elseif facing == 3 then x = x - 1
+        end
+        return true
+    end
+    return false
+end
+
+local function upAndUpdate()
+    if turtle.up() then
+        z = z + 1
+        return true
+    end
+    return false
+end
+
+local function downAndUpdate()
+    if turtle.down() then
+        z = z - 1
+        return true
+    end
+    return false
+end
+
+local function inspectDownMatches(substr)
+    local ok, data = turtle.inspectDown()
+    return ok and data.name:find(substr)
+end
+
+local function inspectDown()
+    return turtle.inspectDown()
+end
+
+local function victory()
+    print("Victory!")
+    for i = 1, 4 do turtle.turnRight() end
+    if not turtle.detectUp() then
+        turtle.up()
+    end
+end
+
+local function markVisited()
+    visited[key(x, y, z)] = true
+end
+
+local function isVisited(px, py, pz)
+    return visited[key(px, py, pz)] == true
+end
+
+local function neighborFor(dir)
+    if dir == 0 then return x, y+1, z
+    elseif dir == 1 then return x+1, y, z
+    elseif dir == 2 then return x, y-1, z
+    elseif dir == 3 then return x-1, y, z
+    end
+end
+
+local function canMoveAbsolute(dir)
+    local oldFacing = facing
+    turnTo(dir)
+    local blocked = turtle.detect()
+    turnTo(oldFacing)
+    return not blocked
+end
+
+local function moveAbsolute(dir)
+    turnTo(dir)
+    if not turtle.detect() then
+        local prevX, prevY, prevZ = x, y, z
+        if forwardAndUpdate() then
+            table.insert(path, {prevX, prevY, prevZ, "forward"})
+            return true
+        end
+    end
+    return false
+end
+
+local function checkVerticalMovement()
+    -- Check what's below the turtle
+    local ok, data = inspectDown()
+    
+    -- If there's nothing below (air), go down
+    if not ok then
+        local prevX, prevY, prevZ = x, y, z
+        if downAndUpdate() then
+            table.insert(path, {prevX, prevY, prevZ, "down"})
+            return true
+        end
+    -- If there's a red block below, try to go up
+    elseif ok and data.name:find(redBlock) then
+        -- Check if we can go up
+        if not turtle.detectUp() then
+            local prevX, prevY, prevZ = x, y, z
+            if upAndUpdate() then
+                table.insert(path, {prevX, prevY, prevZ, "up"})
+                return true
+            end
+        end
+    end
+    
+    return false
+end
+
+local function backtrackStep()
+    if #path == 0 then
+        return false
+    end
+    
+    local prev = table.remove(path)
+    local px, py, pz, moveType = prev[1], prev[2], prev[3], prev[4]
+    local dx, dy, dz = px - x, py - y, pz - z
+    
+    if moveType == "forward" then
+        -- Need to face the opposite direction and move forward
+        local needed
+        if dx == 1 and dy == 0 then needed = 1  -- came from x+1, need to go +x (east)
+        elseif dx == -1 and dy == 0 then needed = 3  -- came from x-1, need to go -x (west)
+        elseif dx == 0 and dy == 1 then needed = 2  -- came from y+1, need to go +y (south)
+        elseif dx == 0 and dy == -1 then needed = 0  -- came from y-1, need to go -y (north)
+        else
+            print("Backtrack error: prev not adjacent", x, y, z, px, py, pz)
+            return false
+        end
+        
+        turnTo(needed)
+        if forwardAndUpdate() then
+            return true
+        else
+            print("Failed to backtrack forward. Aborting.")
+            return false
+        end
+    elseif moveType == "down" then
+        -- Came from above, need to go up
+        if upAndUpdate() then
+            return true
+        else
+            print("Failed to backtrack up. Aborting.")
+            return false
+        end
+    elseif moveType == "up" then
+        -- Came from below, need to go down
+        if downAndUpdate() then
+            return true
+        else
+            print("Failed to backtrack down. Aborting.")
+            return false
+        end
+    else
+        print("Unknown move type in backtrack:", moveType)
+        return false
+    end
+end
+
+local function exploreFromCurrentPosition()
+    -- Try all directions from current position
+    local tryOrder = { (facing + 1) % 4, facing, (facing + 3) % 4, (facing + 2) % 4 }
+
+    for _, absDir in ipairs(tryOrder) do
+        local nx, ny, nz = neighborFor(absDir)
+        if not isVisited(nx, ny, nz) then
+            if canMoveAbsolute(absDir) then
+                if moveAbsolute(absDir) then
+                    markVisited()
+                    return true
+                end
+            else
+                visited[key(nx, ny, nz)] = true
+            end
+        end
+    end
+    
+    return false
+end
+
+local function canMoveInAnyDirection()
+    local tryOrder = { 0, 1, 2, 3 }
+    
+    for _, dir in ipairs(tryOrder) do
+        if canMoveAbsolute(dir) then
+            return true
+        end
+    end
+    
+    return false
+end
+
+local function hasUnvisitedNeighbors()
+    local tryOrder = { 0, 1, 2, 3 }
+    
+    for _, dir in ipairs(tryOrder) do
+        local nx, ny, nz = neighborFor(dir)
+        if not isVisited(nx, ny, nz) then
+            if canMoveAbsolute(dir) then
+                return true
+            end
+        end
+    end
+    
+    return false
+end
+
+-- Main exploration loop with improved backtracking
+local function explore()
+    -- First check for special vertical movement
+    local verticalMoved = checkVerticalMovement()
+    if verticalMoved then
+        markVisited()
+        -- After vertical movement, immediately try to explore from new position
+        if not exploreFromCurrentPosition() then
+            -- If no horizontal moves available, continue with normal loop
+        end
+        return true
+    end
+
+    -- Regular horizontal movement and exploration
+    local moved = false
+    local tryOrder = { (facing + 1) % 4, facing, (facing + 3) % 4, (facing + 2) % 4 }
+
+    for _, absDir in ipairs(tryOrder) do
+        local nx, ny, nz = neighborFor(absDir)
+        if not isVisited(nx, ny, nz) then
+            if canMoveAbsolute(absDir) then
+                if moveAbsolute(absDir) then
+                    markVisited()
+                    moved = true
+                    break
+                end
+            else
+                visited[key(nx, ny, nz)] = true
+            end
+        end
+    end
+
+    if not moved then
+        -- If we can't move in any direction, try to backtrack
+        if not backtrackStep() then
+            print("no path found")
+            return false
+        end
+    end
+    
+    return true
+end
+
+markVisited()
+
+if inspectDownMatches(start) then
+    print("At start tile.")
+end
+
+while true do
+    if inspectDownMatches(goal) then
+        victory()
+        break
+    end
+
+    if not explore() then
+        break
+    end
+end
+
+print("Done. Final coords:", x, y, z, "facing", facing)
